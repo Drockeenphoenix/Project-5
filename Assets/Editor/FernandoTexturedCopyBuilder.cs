@@ -16,6 +16,7 @@ public static class FernandoTexturedCopyBuilder
     private const string SourceScenePath = "Assets/Scenes/Fernando Scene.unity";
     private const string TargetScenePath = "Assets/Scenes/Fernando_Textured.unity";
     private const string PreviewFolder = "Assets/Art/Previews";
+    private const string GeneratedPrefabFolder = "Assets/Prefabs/Generated";
 
     private static Material wall;
     private static Material floor;
@@ -53,6 +54,7 @@ public static class FernandoTexturedCopyBuilder
         AssetDatabase.Refresh();
         Scene scene = EditorSceneManager.OpenScene(TargetScenePath, OpenSceneMode.Single);
         LoadMaterials();
+        AlignWithCommandRoomTextureLibrary();
 
         Bounds room = GetRoomBounds();
         float floorTop = room.min.y + 0.25f;
@@ -65,6 +67,7 @@ public static class FernandoTexturedCopyBuilder
         AddWorkSurfaceDetail(root, room, floorTop);
         AddEnvironmentalStory(root, room, floorTop, ceilingHeight);
         AddLighting(root, room, floorTop, ceilingHeight);
+        RepairAndOrganizeLoadedCopy(room, floorTop, ceilingHeight);
         ConfigurePresentation(room);
         RenderPreviews(room, floorTop, ceilingHeight);
 
@@ -86,6 +89,8 @@ public static class FernandoTexturedCopyBuilder
         {
             EditorSceneManager.OpenScene(TargetScenePath, OpenSceneMode.Single);
         }
+
+        LoadMaterials();
 
         int rendererCount = 0;
         int missingMaterialSlots = 0;
@@ -114,6 +119,9 @@ public static class FernandoTexturedCopyBuilder
             }
         }
 
+        int commandRoomMappingIssues = CountCommandRoomMappingIssues();
+        int generatedLineClutter = CountGeneratedLineClutter();
+
         Bounds room = GetRoomBounds();
         float floorTop = room.min.y + 0.25f;
         float ceilingHeight = GetWallCeiling(room, floorTop);
@@ -125,13 +133,15 @@ public static class FernandoTexturedCopyBuilder
         EditorSceneManager.SaveScene(SceneManager.GetActiveScene(), TargetScenePath);
 
         string report = string.Format(
-            "QA complete: {0} renderers inspected, {1} missing material slots, {2} Unity default-material slots, {3}/{4} textured slots repeat correctly, {5} use clamped texture addressing.",
+            "QA complete: {0} renderers inspected, {1} missing material slots, {2} Unity default-material slots, {3}/{4} textured slots repeat correctly, {5} use clamped texture addressing, {6} Command Room mapping/wrap calibration issues, and {7} generated line-clutter props remain.",
             rendererCount,
             missingMaterialSlots,
             defaultMaterialSlots,
             repeatingTextureSlots,
             texturedSlots,
-            clampedTextureSlots);
+            clampedTextureSlots,
+            commandRoomMappingIssues,
+            generatedLineClutter);
         Debug.Log("Fernando textured-copy " + report);
         EditorUtility.DisplayDialog("Fernando texture QA", report + "\n\nRendered three extra QA views to Assets/Art/Previews.", "OK");
     }
@@ -147,6 +157,7 @@ public static class FernandoTexturedCopyBuilder
 
         Scene scene = EditorSceneManager.OpenScene(TargetScenePath, OpenSceneMode.Single);
         LoadMaterials();
+        AlignWithCommandRoomTextureLibrary();
         Bounds room = GetRoomBounds();
         float floorTop = room.min.y + 0.25f;
         float ceilingHeight = GetWallCeiling(room, floorTop);
@@ -158,6 +169,442 @@ public static class FernandoTexturedCopyBuilder
         AssetDatabase.SaveAssets();
         Debug.Log(string.Format("Fernando textured copy replaced {0} default greybox material slots; {1} remain.", before - after, after));
         EditorUtility.DisplayDialog("Greybox material cleanup", string.Format("Replaced {0} remaining default greybox material slots. {1} remain.", before - after, after), "OK");
+    }
+
+    /// <summary>
+    /// Converts the flat Fernando placeholders into a review-ready, ordered scene without
+    /// touching the original greybox scene. The source shapes remain in a disabled reference
+    /// group so dimensions and placement are still recoverable.
+    /// </summary>
+    [MenuItem("Project 5/Repair & Organize Fernando Textured Copy")]
+    public static void RepairAndOrganizeTexturedCopy()
+    {
+        if (AssetDatabase.LoadAssetAtPath<SceneAsset>(TargetScenePath) == null)
+        {
+            EditorUtility.DisplayDialog("Fernando textured copy missing", "Build Fernando Textured Copy first.", "OK");
+            return;
+        }
+
+        Scene scene = EditorSceneManager.OpenScene(TargetScenePath, OpenSceneMode.Single);
+        LoadMaterials();
+        AlignWithCommandRoomTextureLibrary();
+        Bounds room = GetRoomBounds();
+        float floorTop = room.min.y + 0.25f;
+        float ceilingHeight = GetWallCeiling(room, floorTop);
+        RepairAndOrganizeLoadedCopy(room, floorTop, ceilingHeight);
+        ConfigurePresentation(room);
+        RenderPreviews(room, floorTop, ceilingHeight);
+        EditorSceneManager.MarkSceneDirty(scene);
+        EditorSceneManager.SaveScene(scene, TargetScenePath);
+        AssetDatabase.SaveAssets();
+        AssetDatabase.Refresh();
+        EditorUtility.DisplayDialog(
+            "Fernando scene repaired",
+            "The final scene now uses the available cabinet and console FBXs, reusable utility-prop prefabs, and clear hierarchy groups. The replaced original blocks are retained but hidden under [20] Greybox replacements.",
+            "OK");
+    }
+
+    [MenuItem("Project 5/Audit Fernando Models & Organization")]
+    public static void AuditModelsAndOrganization()
+    {
+        if (SceneManager.GetActiveScene().path != TargetScenePath)
+        {
+            EditorSceneManager.OpenScene(TargetScenePath, OpenSceneMode.Single);
+        }
+
+        string[] fbxPaths =
+        {
+            "Assets/Prefabs/ShortCabinet.fbx",
+            "Assets/Prefabs/TallCabinet.fbx",
+            "Assets/Prefabs/WideCabinet.fbx",
+            "Assets/Prefabs/filingCabinet.fbx",
+            "Assets/Prefabs/mainConsole.fbx",
+            "Assets/Prefabs/sideConsole.fbx"
+        };
+        int availableFbx = 0;
+        foreach (string path in fbxPaths)
+        {
+            if (AssetDatabase.LoadAssetAtPath<GameObject>(path) != null) availableFbx++;
+        }
+
+        int importedInstances = 0;
+        int generatedProps = 0;
+        int hierarchyGroups = 0;
+        foreach (GameObject root in SceneManager.GetActiveScene().GetRootGameObjects())
+        {
+            if (root.name.StartsWith("[", StringComparison.Ordinal)) hierarchyGroups++;
+            if (root.name.Equals("[30] Imported FBX Models", StringComparison.Ordinal)) importedInstances = root.transform.childCount;
+            if (root.name.Equals("[40] Utility Props — generated prefabs", StringComparison.Ordinal)) generatedProps = root.transform.childCount;
+        }
+
+        string report = string.Format(
+            "Asset audit: {0}/6 cabinet/console FBXs are present in Assets/Prefabs. {1} imported FBX instances and {2} utility-prop pieces are in the final scene. {3} ordered root groups are present.\n\nNo fire-hydrant or fan FBX was supplied in Project 5, so those are maintained as reusable Unity prefabs in Assets/Prefabs/Generated and use the project material library.",
+            availableFbx,
+            importedInstances,
+            generatedProps,
+            hierarchyGroups);
+        Debug.Log("Fernando model and organization audit — " + report);
+        EditorUtility.DisplayDialog("Fernando model & organization audit", report, "OK");
+    }
+
+    private static void RepairAndOrganizeLoadedCopy(Bounds room, float floorTop, float ceilingHeight)
+    {
+        // The first texturing pass added detail to the greybox forms. Remove only those
+        // generated overlays that would now sit on top of the proper imported models.
+        RemoveGeneratedLineClutter();
+        RemoveLegacyEquipmentOverlays();
+        RemoveGeneratedDefconSketches();
+        DestroyDirectRoot("[30] Imported FBX Models");
+        DestroyDirectRoot("[40] Utility Props — generated prefabs");
+
+        Transform architecture = GetOrCreateRoot("[10] Architecture & layout");
+        Transform greyboxReference = GetOrCreateRoot("[20] Greybox replacements — hidden");
+        Transform furniture = GetOrCreateRoot("[50] Furniture & workstation");
+        Transform systems = GetOrCreateRoot("[60] Building systems & signage");
+        Transform dressing = GetOrCreateRoot("[70] Set dressing, ceiling & lighting");
+        Transform cameras = GetOrCreateRoot("[90] Cameras & scene lights");
+
+        // Reparent only pre-existing ungrouped roots. This is safe to run again because
+        // the ordered roots identify work that has already been organized.
+        List<GameObject> roots = new List<GameObject>(SceneManager.GetActiveScene().GetRootGameObjects());
+        foreach (GameObject root in roots)
+        {
+            if (root.name.StartsWith("[", StringComparison.Ordinal)) continue;
+
+            if (root.name.StartsWith("FERNANDO TEXTURE PASS", StringComparison.Ordinal))
+            {
+                root.transform.SetParent(dressing, true);
+                continue;
+            }
+
+            Transform parent = OrganizationParent(root.name, architecture, greyboxReference, furniture, systems, cameras);
+            root.transform.SetParent(parent, true);
+            if (parent == greyboxReference) SetRenderersEnabled(root, false);
+        }
+
+        Transform imported = GetOrCreateRoot("[30] Imported FBX Models");
+        Transform utilityProps = GetOrCreateRoot("[40] Utility Props — generated prefabs");
+        // Side Desk was drawn as a raised wall placeholder in Fernando's source; the final
+        // console belongs at the workstation, so its placeholder is explicitly retired.
+        MoveToHiddenGreyboxReference("Side Desk", greyboxReference);
+        InstantiateAvailableFbxModels(imported, room, floorTop);
+        AddUtilityPropInstances(utilityProps, room, floorTop, ceilingHeight);
+        AddDefconReferenceSketches(systems, room, floorTop, ceilingHeight);
+    }
+
+    private static Transform OrganizationParent(
+        string name,
+        Transform architecture,
+        Transform greyboxReference,
+        Transform furniture,
+        Transform systems,
+        Transform cameras)
+    {
+        string id = name.ToLowerInvariant();
+        if (id.Contains("camera") || id.Contains("directional light")) return cameras;
+        if (id.Contains("floor") || id.Contains("wall") || id.Contains("door")) return architecture;
+        if (id.Contains("desk") || id.Contains("chair")) return furniture;
+        if (id.Contains("board") || id.Contains("monitor") || id.Contains("switch")) return systems;
+        // These are the source placeholders now represented by final imported FBX assets.
+        if (id.Contains("cabinet") || id.Contains("filing") || id.Contains("medical") || id.Contains("folder") ||
+            id.StartsWith("tall", StringComparison.Ordinal) || id.StartsWith("short", StringComparison.Ordinal) ||
+            id.Contains("control panel") || id == "cylinder" || id.StartsWith("cylinder ", StringComparison.Ordinal))
+        {
+            return greyboxReference;
+        }
+        return systems;
+    }
+
+    private static void MoveToHiddenGreyboxReference(string name, Transform greyboxReference)
+    {
+        GameObject sourceObject = FindByName(name);
+        if (sourceObject == null) return;
+        sourceObject.transform.SetParent(greyboxReference, true);
+        SetRenderersEnabled(sourceObject, false);
+    }
+
+    private static Transform GetOrCreateRoot(string name)
+    {
+        foreach (GameObject root in SceneManager.GetActiveScene().GetRootGameObjects())
+        {
+            if (root.name.Equals(name, StringComparison.Ordinal)) return root.transform;
+        }
+        return new GameObject(name).transform;
+    }
+
+    private static void DestroyDirectRoot(string name)
+    {
+        foreach (GameObject root in SceneManager.GetActiveScene().GetRootGameObjects())
+        {
+            if (root.name.Equals(name, StringComparison.Ordinal))
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                return;
+            }
+        }
+    }
+
+    private static void SetRenderersEnabled(GameObject gameObject, bool enabled)
+    {
+        foreach (Renderer renderer in gameObject.GetComponentsInChildren<Renderer>(true)) renderer.enabled = enabled;
+    }
+
+    private static void RemoveLegacyEquipmentOverlays()
+    {
+        GameObject legacyRoot = FindByName("FERNANDO TEXTURE PASS — COPY ONLY");
+        if (legacyRoot == null) return;
+
+        List<GameObject> remove = new List<GameObject>();
+        foreach (Transform transform in legacyRoot.GetComponentsInChildren<Transform>(true))
+        {
+            if (transform == legacyRoot.transform) continue;
+            string id = transform.name.ToLowerInvariant();
+            if (id.Contains("instrument panel") || id.Contains("crt readout") || id.Contains("number plate") ||
+                id.Contains("status indicator") || id.Contains("recessed handle") || id.Contains("cam lock") ||
+                id.Contains("side label") || id.Contains("asset label") || id.StartsWith("control-panel", StringComparison.Ordinal) ||
+                id.StartsWith("monitor ", StringComparison.Ordinal) || id.StartsWith("wall-switch", StringComparison.Ordinal) ||
+                id.Contains("desk blotter") || id.Contains("log binder") || id.Contains("clipboard") ||
+                id.Contains("upholstered seat pad") || id.Contains("pinned maintenance note") ||
+                id.Contains("red push pin") || id.Contains("fire extinguisher"))
+            {
+                remove.Add(transform.gameObject);
+            }
+        }
+        foreach (GameObject gameObject in remove) UnityEngine.Object.DestroyImmediate(gameObject);
+    }
+
+    /// <summary>
+    /// Removes only the decorative ceiling/service-line primitives generated by this helper.
+    /// Fernando's submitted geometry and the imported FBX models are never touched.
+    /// </summary>
+    private static void RemoveGeneratedLineClutter()
+    {
+        GameObject legacyRoot = FindByName("FERNANDO TEXTURE PASS — COPY ONLY");
+        if (legacyRoot == null) return;
+
+        List<GameObject> remove = new List<GameObject>();
+        foreach (Transform transform in legacyRoot.GetComponentsInChildren<Transform>(true))
+        {
+            if (transform == legacyRoot.transform) continue;
+            if (IsGeneratedLineClutterName(transform.name)) remove.Add(transform.gameObject);
+        }
+        foreach (GameObject gameObject in remove) UnityEngine.Object.DestroyImmediate(gameObject);
+    }
+
+    private static void RemoveGeneratedDefconSketches()
+    {
+        List<GameObject> remove = new List<GameObject>();
+        foreach (GameObject gameObject in SceneObjects())
+        {
+            if (gameObject.name.Equals("DEFCON reference sketches", StringComparison.Ordinal)) remove.Add(gameObject);
+        }
+        foreach (GameObject gameObject in remove) UnityEngine.Object.DestroyImmediate(gameObject);
+    }
+
+    private static bool IsGeneratedLineClutterName(string name)
+    {
+        string id = name.ToLowerInvariant();
+        return id.StartsWith("ceiling t-bar", StringComparison.Ordinal) ||
+               id.StartsWith("ceiling vent", StringComparison.Ordinal) ||
+               id.StartsWith("left cooling pipe", StringComparison.Ordinal) ||
+               id.StartsWith("cooling-pipe", StringComparison.Ordinal) ||
+               id.StartsWith("cable tray", StringComparison.Ordinal);
+    }
+
+    private static int CountGeneratedLineClutter()
+    {
+        int count = 0;
+        foreach (GameObject gameObject in SceneObjects())
+        {
+            if (IsGeneratedLineClutterName(gameObject.name)) count++;
+        }
+        return count;
+    }
+
+    private static void InstantiateAvailableFbxModels(Transform parent, Bounds room, float floorTop)
+    {
+        foreach (GameObject target in FindAllByExactName("Wide Cabinet")) PlaceFbxAtBounds("Assets/Prefabs/WideCabinet.fbx", "Imported FBX — Wide Cabinet", target, steel, parent);
+        foreach (GameObject target in FindAllByNamePrefix("Wide Cabinet (")) PlaceFbxAtBounds("Assets/Prefabs/WideCabinet.fbx", "Imported FBX — Wide Cabinet", target, steel, parent);
+        foreach (GameObject target in FindAllByExactName("tall")) PlaceFbxAtBounds("Assets/Prefabs/TallCabinet.fbx", "Imported FBX — Tall Cabinet", target, steel, parent);
+        foreach (GameObject target in FindAllByNamePrefix("tall (")) PlaceFbxAtBounds("Assets/Prefabs/TallCabinet.fbx", "Imported FBX — Tall Cabinet", target, steel, parent);
+        foreach (GameObject target in FindAllByExactName("Short")) PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Short Cabinet", target, steel, parent);
+        foreach (GameObject target in FindAllByNamePrefix("Short (")) PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Short Cabinet", target, steel, parent);
+
+        GameObject filing = FindByName("filing");
+        if (filing != null) PlaceFbxAtBounds("Assets/Prefabs/filingCabinet.fbx", "Imported FBX — Filing Cabinet (Alvin)", filing, steel, parent);
+        GameObject medical = FindByName("medical");
+        if (medical != null)
+        {
+            GameObject medicalModel = PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Medical Cabinet", medical, steel, parent);
+            if (medicalModel != null && TryGetBounds(medical, out Bounds medicalSlot))
+            {
+                // The source medical-cabinet block was accidentally raised into the wall.
+                // Preserve its wall position but place the finished cabinet on the floor.
+                MoveModelToFloor(medicalModel, new Vector3(medicalSlot.center.x, floorTop, medicalSlot.center.z));
+                if (TryGetBounds(medicalModel, out Bounds medicalBounds)) AddMedicalMark(medicalBounds, parent);
+            }
+        }
+        GameObject folder = FindByName("folder");
+        if (folder != null)
+        {
+            GameObject folderModel = PlaceFbxAtBounds("Assets/Prefabs/filingCabinet.fbx", "Imported FBX — Folder Cabinet", folder, steel, parent);
+            if (folderModel != null && TryGetBounds(folder, out Bounds folderSlot))
+            {
+                MoveModelToFloor(folderModel, new Vector3(folderSlot.center.x, floorTop, folderSlot.center.z));
+            }
+        }
+        GameObject console = FindByName("Control Panel");
+        if (console != null) PlaceFbxAtBounds("Assets/Prefabs/mainConsole.fbx", "Imported FBX — Main Console (Alvin)", console, darkSteel, parent);
+        GameObject sideDesk = FindByName("Side Desk");
+        if (sideDesk != null)
+        {
+            GameObject sideConsole = PlaceFbxAtBounds("Assets/Prefabs/sideConsole.fbx", "Imported FBX — Side Console (Alvin)", sideDesk, steel, parent);
+            if (sideConsole != null)
+            {
+                // The source location is at wall height. Use it only for the intended scale,
+                // then position the finished console beside the workstation on the floor.
+                MoveModelToFloor(sideConsole, new Vector3(room.center.x - room.size.x * 0.20f, floorTop, room.center.z + room.size.z * 0.08f));
+            }
+        }
+    }
+
+    private static void MoveModelToFloor(GameObject model, Vector3 floorCenter)
+    {
+        if (model == null || !TryGetBounds(model, out Bounds bounds)) return;
+        model.transform.position += new Vector3(
+            floorCenter.x - bounds.center.x,
+            floorCenter.y - bounds.min.y,
+            floorCenter.z - bounds.center.z);
+    }
+
+    private static GameObject PlaceFbxAtBounds(string assetPath, string name, GameObject target, Material material, Transform parent)
+    {
+        if (target == null || !TryGetBounds(target, out Bounds targetBounds)) return null;
+        GameObject source = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+        if (source == null)
+        {
+            Debug.LogWarning("Fernando scene organization could not find expected model: " + assetPath);
+            return null;
+        }
+
+        GameObject instance = PrefabUtility.InstantiatePrefab(source, SceneManager.GetActiveScene()) as GameObject;
+        if (instance == null) return null;
+        instance.name = name;
+        instance.transform.SetParent(parent, true);
+        instance.transform.rotation = target.transform.rotation;
+        if (!TryGetBounds(instance, out Bounds rawBounds) || rawBounds.size.x < 0.0001f || rawBounds.size.y < 0.0001f || rawBounds.size.z < 0.0001f)
+        {
+            UnityEngine.Object.DestroyImmediate(instance);
+            return null;
+        }
+
+        float scale = Mathf.Min(
+            targetBounds.size.x / rawBounds.size.x,
+            targetBounds.size.y / rawBounds.size.y,
+            targetBounds.size.z / rawBounds.size.z);
+        scale = Mathf.Clamp(scale, 0.0001f, 10000f);
+        instance.transform.localScale *= scale;
+        if (TryGetBounds(instance, out Bounds scaledBounds))
+        {
+            Vector3 positionOffset = new Vector3(
+                targetBounds.center.x - scaledBounds.center.x,
+                targetBounds.min.y - scaledBounds.min.y,
+                targetBounds.center.z - scaledBounds.center.z);
+            instance.transform.position += positionOffset;
+        }
+        SetMaterial(instance, material);
+        return instance;
+    }
+
+    private static List<GameObject> FindAllByExactName(string name)
+    {
+        List<GameObject> matches = new List<GameObject>();
+        foreach (GameObject gameObject in SceneObjects())
+        {
+            if (gameObject.name.Equals(name, StringComparison.Ordinal)) matches.Add(gameObject);
+        }
+        return matches;
+    }
+
+    private static List<GameObject> FindAllByNamePrefix(string prefix)
+    {
+        List<GameObject> matches = new List<GameObject>();
+        foreach (GameObject gameObject in SceneObjects())
+        {
+            if (gameObject.name.StartsWith(prefix, StringComparison.Ordinal)) matches.Add(gameObject);
+        }
+        return matches;
+    }
+
+    private static void AddMedicalMark(Bounds bounds, Transform parent)
+    {
+        Vector3 face = new Vector3(bounds.center.x, bounds.center.y + bounds.size.y * 0.19f, bounds.min.z - 0.028f);
+        Box("Medical cabinet white cross — horizontal", face, new Vector3(bounds.size.x * 0.22f, bounds.size.y * 0.055f, 0.015f), paper, parent);
+        Box("Medical cabinet white cross — vertical", face, new Vector3(bounds.size.x * 0.055f, bounds.size.y * 0.22f, 0.015f), paper, parent);
+    }
+
+    private static void AddUtilityPropInstances(Transform parent, Bounds room, float floorTop, float ceilingHeight)
+    {
+        GameObject hydrant = GetOrCreateFireHydrantPrefab();
+        GameObject fan = GetOrCreateFloorFanPrefab();
+
+        InstantiateUtilityPrefab(hydrant, "Fire Hydrant — generated prefab", new Vector3(room.center.x - room.size.x * 0.14f, floorTop, room.min.z + 0.20f), Quaternion.Euler(0f, 0f, 0f), parent);
+        InstantiateUtilityPrefab(fan, "Floor Fan — generated prefab", new Vector3(room.min.x + room.size.x * 0.12f, floorTop, room.min.z + room.size.z * 0.14f), Quaternion.Euler(0f, 36f, 0f), parent);
+    }
+
+    private static GameObject InstantiateUtilityPrefab(GameObject prefab, string name, Vector3 position, Quaternion rotation, Transform parent)
+    {
+        if (prefab == null) return null;
+        GameObject instance = PrefabUtility.InstantiatePrefab(prefab, SceneManager.GetActiveScene()) as GameObject;
+        if (instance == null) return null;
+        instance.name = name;
+        instance.transform.SetParent(parent, true);
+        instance.transform.position = position;
+        instance.transform.rotation = rotation;
+        return instance;
+    }
+
+    private static GameObject GetOrCreateFireHydrantPrefab()
+    {
+        const string path = GeneratedPrefabFolder + "/FireHydrant.prefab";
+        GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+        if (prefab != null) return prefab;
+        EnsureFolder(GeneratedPrefabFolder);
+        GameObject root = new GameObject("Fire Hydrant");
+        Cylinder("Hydrant base", new Vector3(0f, 0.045f, 0f), 0.16f, 0.09f, darkSteel, root.transform, Quaternion.identity);
+        Cylinder("Hydrant body", new Vector3(0f, 0.38f, 0f), 0.12f, 0.66f, red, root.transform, Quaternion.identity);
+        Cylinder("Hydrant bonnet", new Vector3(0f, 0.74f, 0f), 0.145f, 0.12f, red, root.transform, Quaternion.identity);
+        Cylinder("Hydrant top cap", new Vector3(0f, 0.83f, 0f), 0.075f, 0.06f, darkSteel, root.transform, Quaternion.identity);
+        Cylinder("Hydrant left outlet", new Vector3(-0.15f, 0.49f, 0f), 0.09f, 0.16f, red, root.transform, Quaternion.Euler(0f, 0f, 90f));
+        Cylinder("Hydrant right outlet", new Vector3(0.15f, 0.49f, 0f), 0.09f, 0.16f, red, root.transform, Quaternion.Euler(0f, 0f, 90f));
+        Cylinder("Hydrant outlet cap", new Vector3(0f, 0.49f, -0.13f), 0.075f, 0.05f, darkSteel, root.transform, Quaternion.Euler(90f, 0f, 0f));
+        Sphere("Hydrant valve", new Vector3(0f, 0.84f, 0f), 0.13f, darkSteel, root.transform);
+        Box("Hydrant inspection plate", new Vector3(0f, 0.37f, -0.123f), new Vector3(0.13f, 0.15f, 0.012f), paper, root.transform);
+        prefab = PrefabUtility.SaveAsPrefabAsset(root, path);
+        UnityEngine.Object.DestroyImmediate(root);
+        return prefab;
+    }
+
+    private static GameObject GetOrCreateFloorFanPrefab()
+    {
+        const string path = GeneratedPrefabFolder + "/FloorFan.prefab";
+        GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+        if (prefab != null) return prefab;
+        EnsureFolder(GeneratedPrefabFolder);
+        GameObject root = new GameObject("Floor Fan");
+        Cylinder("Fan weighted base", new Vector3(0f, 0.045f, 0f), 0.23f, 0.09f, darkSteel, root.transform, Quaternion.identity);
+        Cylinder("Fan stand", new Vector3(0f, 0.47f, 0f), 0.035f, 0.78f, darkSteel, root.transform, Quaternion.identity);
+        Cylinder("Fan motor", new Vector3(0f, 0.89f, 0f), 0.115f, 0.18f, steel, root.transform, Quaternion.Euler(90f, 0f, 0f));
+        Cylinder("Fan cage", new Vector3(0f, 0.93f, -0.08f), 0.28f, 0.035f, darkSteel, root.transform, Quaternion.Euler(90f, 0f, 0f));
+        Sphere("Fan hub", new Vector3(0f, 0.93f, -0.11f), 0.09f, steel, root.transform);
+        for (int i = 0; i < 4; i++)
+        {
+            Box("Fan blade", new Vector3(0.105f, 0.93f, -0.12f), new Vector3(0.22f, 0.06f, 0.016f), steel, root.transform, Quaternion.Euler(0f, 0f, i * 90f + 18f));
+        }
+        Box("Fan tilt bracket", new Vector3(0f, 0.76f, 0f), new Vector3(0.11f, 0.07f, 0.16f), darkSteel, root.transform);
+        prefab = PrefabUtility.SaveAsPrefabAsset(root, path);
+        UnityEngine.Object.DestroyImmediate(root);
+        return prefab;
     }
 
     private static void LoadMaterials()
@@ -212,6 +659,95 @@ public static class FernandoTexturedCopyBuilder
 
         AssetDatabase.CreateAsset(material, path);
         return material;
+    }
+
+    /// <summary>
+    /// Fernando's copy intentionally shares the validated Command Room material library.
+    /// These are the same textures and physical-repeat values used by CommandRoom_Textured.
+    /// </summary>
+    private static void AlignWithCommandRoomTextureLibrary()
+    {
+        ConfigureRepeatingTexture("Assets/Art/Textures/offwhite_painted_concrete.png");
+        ConfigureRepeatingTexture("Assets/Art/Textures/institutional_vinyl_tile.png");
+        ConfigureRepeatingTexture("Assets/Art/Textures/acoustic_ceiling_tile.png");
+        ConfigureRepeatingTexture("Assets/Art/Textures/painted_sage_steel.png");
+        ConfigureRepeatingTexture("Assets/Art/Textures/worn_walnut_laminate.png");
+        ConfigureRepeatingTexture("Assets/Art/Textures/black_vinyl_upholstery.png");
+        ConfigureRepeatingTexture("Assets/Art/Textures/aged_bulletin_cork.png");
+
+        SetMaterialTiling(wall, new Vector2(2.25f, 1.25f));
+        SetMaterialTiling(floor, new Vector2(3f, 2f));
+        SetMaterialTiling(ceiling, new Vector2(7f, 4f));
+        SetMaterialTiling(steel, new Vector2(1.2f, 1.2f));
+        SetMaterialTiling(darkSteel, new Vector2(1.2f, 1.2f));
+        SetMaterialTiling(wood, new Vector2(1.6f, 1.2f));
+        SetMaterialTiling(vinyl, new Vector2(2.8f, 2.8f));
+        SetMaterialTiling(cork, new Vector2(1.5f, 1.2f));
+        SetMaterialTiling(paper, new Vector2(1.8f, 1.8f));
+        SetMaterialTiling(red, Vector2.one);
+        SetMaterialTiling(amber, Vector2.one);
+        SetMaterialTiling(green, Vector2.one);
+        SetMaterialTiling(whiteGlow, Vector2.one);
+    }
+
+    private static void ConfigureRepeatingTexture(string path)
+    {
+        TextureImporter importer = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (importer == null) return;
+
+        bool changed = importer.wrapMode != TextureWrapMode.Repeat || importer.filterMode != FilterMode.Trilinear;
+        if (!changed) return;
+
+        importer.wrapMode = TextureWrapMode.Repeat;
+        importer.filterMode = FilterMode.Trilinear;
+        importer.SaveAndReimport();
+    }
+
+    private static void SetMaterialTiling(Material material, Vector2 tiling)
+    {
+        if (material == null) return;
+        if (material.HasProperty("_BaseMap")) material.SetTextureScale("_BaseMap", tiling);
+        if (material.HasProperty("_MainTex")) material.SetTextureScale("_MainTex", tiling);
+        EditorUtility.SetDirty(material);
+    }
+
+    private static int CountCommandRoomMappingIssues()
+    {
+        int issues = 0;
+        string[] texturePaths =
+        {
+            "Assets/Art/Textures/offwhite_painted_concrete.png",
+            "Assets/Art/Textures/institutional_vinyl_tile.png",
+            "Assets/Art/Textures/acoustic_ceiling_tile.png",
+            "Assets/Art/Textures/painted_sage_steel.png",
+            "Assets/Art/Textures/worn_walnut_laminate.png",
+            "Assets/Art/Textures/black_vinyl_upholstery.png",
+            "Assets/Art/Textures/aged_bulletin_cork.png"
+        };
+        foreach (string texturePath in texturePaths)
+        {
+            TextureImporter importer = AssetImporter.GetAtPath(texturePath) as TextureImporter;
+            if (importer == null || importer.wrapMode != TextureWrapMode.Repeat || importer.filterMode != FilterMode.Trilinear) issues++;
+        }
+
+        if (!HasExpectedTiling(wall, new Vector2(2.25f, 1.25f))) issues++;
+        if (!HasExpectedTiling(floor, new Vector2(3f, 2f))) issues++;
+        if (!HasExpectedTiling(ceiling, new Vector2(7f, 4f))) issues++;
+        if (!HasExpectedTiling(steel, new Vector2(1.2f, 1.2f))) issues++;
+        if (!HasExpectedTiling(darkSteel, new Vector2(1.2f, 1.2f))) issues++;
+        if (!HasExpectedTiling(wood, new Vector2(1.6f, 1.2f))) issues++;
+        if (!HasExpectedTiling(vinyl, new Vector2(2.8f, 2.8f))) issues++;
+        if (!HasExpectedTiling(cork, new Vector2(1.5f, 1.2f))) issues++;
+        return issues;
+    }
+
+    private static bool HasExpectedTiling(Material material, Vector2 expected)
+    {
+        if (material == null) return false;
+        string property = material.HasProperty("_BaseMap") ? "_BaseMap" : material.HasProperty("_MainTex") ? "_MainTex" : null;
+        if (property == null) return false;
+        Vector2 actual = material.GetTextureScale(property);
+        return Mathf.Approximately(actual.x, expected.x) && Mathf.Approximately(actual.y, expected.y);
     }
 
     private static Bounds GetRoomBounds()
@@ -306,16 +842,9 @@ public static class FernandoTexturedCopyBuilder
         float innerMaxZ = room.max.z - 0.08f;
         float ceilingY = ceilingHeight - 0.06f;
 
-        // A real service-room ceiling needs acoustic tile seams, T-bars, fixtures, and ventilation.
+        // Keep the ceiling surface readable without a dense overlay of generated line props.
+        // The acoustic tile texture provides the subtle repeat; fixtures are added separately.
         Box("Acoustic suspended ceiling", new Vector3(room.center.x, ceilingY, room.center.z), new Vector3(room.size.x - 0.14f, 0.08f, room.size.z - 0.14f), ceiling, parent);
-        for (float x = innerMinX; x <= innerMaxX; x += 0.60f)
-        {
-            Box("Ceiling T-bar — cross room", new Vector3(x, ceilingY - 0.055f, room.center.z), new Vector3(0.027f, 0.030f, room.size.z - 0.18f), darkSteel, parent);
-        }
-        for (float z = innerMinZ; z <= innerMaxZ; z += 0.60f)
-        {
-            Box("Ceiling T-bar — along room", new Vector3(room.center.x, ceilingY - 0.058f, z), new Vector3(room.size.x - 0.18f, 0.030f, 0.027f), darkSteel, parent);
-        }
 
         // Steel baseboard makes the wall thickness and construction readable at a human scale.
         float baseboardY = floorTop + 0.10f;
@@ -324,28 +853,6 @@ public static class FernandoTexturedCopyBuilder
         Box("Left steel baseboard", new Vector3(innerMinX, baseboardY, room.center.z), new Vector3(0.045f, 0.20f, room.size.z - 0.16f), darkSteel, parent);
         Box("Right steel baseboard", new Vector3(innerMaxX, baseboardY, room.center.z), new Vector3(0.045f, 0.20f, room.size.z - 0.16f), darkSteel, parent);
 
-        // Vent, cable tray, and exposed pipework make the neutral room feel maintained and functional.
-        Vector3 vent = new Vector3(room.center.x - room.size.x * 0.22f, ceilingY - 0.07f, room.center.z + room.size.z * 0.18f);
-        Box("Ceiling vent frame", vent, new Vector3(0.72f, 0.03f, 0.72f), darkSteel, parent);
-        for (int i = -3; i <= 3; i++)
-        {
-            Box("Ceiling vent slat", vent + new Vector3(i * 0.085f, -0.028f, 0f), new Vector3(0.020f, 0.018f, 0.58f), steel, parent);
-        }
-
-        float pipeX = innerMinX + 0.13f;
-        Cylinder("Left cooling pipe", new Vector3(pipeX, ceilingY - 0.36f, room.center.z), 0.065f, room.size.z * 0.72f, steel, parent, Quaternion.Euler(90f, 0f, 0f));
-        for (float z = room.center.z - room.size.z * 0.28f; z < room.center.z + room.size.z * 0.31f; z += 1.05f)
-        {
-            Box("Cooling-pipe wall strap", new Vector3(pipeX - 0.030f, ceilingY - 0.36f, z), new Vector3(0.04f, 0.19f, 0.06f), darkSteel, parent);
-        }
-
-        Vector3 tray = new Vector3(room.center.x + room.size.x * 0.20f, ceilingY - 0.30f, innerMaxZ - 0.20f);
-        Box("Cable tray front rail", tray + new Vector3(0f, 0f, -0.13f), new Vector3(room.size.x * 0.42f, 0.055f, 0.028f), darkSteel, parent);
-        Box("Cable tray rear rail", tray + new Vector3(0f, 0f, 0.13f), new Vector3(room.size.x * 0.42f, 0.055f, 0.028f), darkSteel, parent);
-        for (float x = tray.x - room.size.x * 0.19f; x < tray.x + room.size.x * 0.20f; x += 0.32f)
-        {
-            Box("Cable tray rung", new Vector3(x, tray.y, tray.z), new Vector3(0.025f, 0.025f, 0.31f), steel, parent);
-        }
     }
 
     private static void AddEquipmentDetail(Transform parent, Bounds room, float floorTop)
@@ -502,6 +1009,98 @@ public static class FernandoTexturedCopyBuilder
         Cylinder("Wall-clock face", clock + new Vector3(0f, 0f, -0.022f), 0.158f, 0.012f, paper, parent, Quaternion.Euler(90f, 0f, 0f));
         Box("Wall-clock minute hand", clock + new Vector3(0f, 0.055f, -0.032f), new Vector3(0.012f, 0.11f, 0.008f), darkSteel, parent, Quaternion.Euler(0f, 0f, -22f));
         Box("Wall-clock hour hand", clock + new Vector3(0.037f, -0.016f, -0.034f), new Vector3(0.09f, 0.012f, 0.008f), darkSteel, parent, Quaternion.Euler(0f, 0f, 12f));
+    }
+
+    /// <summary>
+    /// Adds a pair of non-interactive period reference sketches to the existing bulletin
+    /// board. They document both DEFCON states without changing the live game display,
+    /// its state, or any gameplay scripts.
+    /// </summary>
+    private static void AddDefconReferenceSketches(Transform parent, Bounds room, float floorTop, float ceilingHeight)
+    {
+        GameObject board = FindByName("Board");
+        Bounds boardBounds = default;
+        bool hasBoard = board != null && TryGetBounds(board, out boardBounds);
+        if (!hasBoard)
+        {
+            boardBounds = new Bounds(
+                new Vector3(room.center.x, floorTop + 1.38f, room.min.z + 0.10f),
+                new Vector3(1.28f, 0.78f, 0.04f));
+        }
+
+        Transform sketches = new GameObject("DEFCON reference sketches").transform;
+        sketches.SetParent(parent, true);
+
+        float cardWidth = Mathf.Clamp(boardBounds.size.x * 0.28f, 0.30f, 0.56f);
+        float cardHeight = Mathf.Clamp(boardBounds.size.y * 0.42f, 0.26f, 0.48f);
+        float spacing = Mathf.Max(cardWidth * 0.62f, boardBounds.size.x * 0.18f);
+        Vector3 face = new Vector3(boardBounds.center.x, boardBounds.center.y, boardBounds.min.z - 0.040f);
+
+        CreateDefconSketchCard(
+            sketches,
+            "DEFCON 1",
+            "MAX\nREADINESS",
+            face + new Vector3(-spacing, 0.02f, 0f),
+            cardWidth,
+            cardHeight,
+            red);
+        CreateDefconSketchCard(
+            sketches,
+            "DEFCON 2",
+            "READINESS\nREDUCED",
+            face + new Vector3(spacing, 0.02f, 0f),
+            cardWidth,
+            cardHeight,
+            amber);
+
+        TextLabel(
+            "DEFCON sketch header",
+            "STATUS REFERENCE",
+            face + new Vector3(0f, cardHeight * 0.67f, -0.012f),
+            Vector3.back,
+            0.030f,
+            new Color(0.12f, 0.15f, 0.12f),
+            sketches);
+    }
+
+    private static void CreateDefconSketchCard(
+        Transform parent,
+        string state,
+        string descriptor,
+        Vector3 center,
+        float width,
+        float height,
+        Material stateMaterial)
+    {
+        Box(state + " sketch card", center, new Vector3(width, height, 0.012f), paper, parent);
+        Box(
+            state + " sketch status swatch",
+            center + new Vector3(0f, -height * 0.26f, -0.012f),
+            new Vector3(width * 0.48f, height * 0.10f, 0.008f),
+            stateMaterial,
+            parent);
+        Sphere(
+            state + " sketch pin",
+            center + new Vector3(-width * 0.31f, height * 0.33f, -0.018f),
+            0.018f,
+            stateMaterial,
+            parent);
+        TextLabel(
+            state + " sketch title",
+            state,
+            center + new Vector3(0f, height * 0.16f, -0.016f),
+            Vector3.back,
+            0.050f,
+            new Color(0.12f, 0.15f, 0.12f),
+            parent);
+        TextLabel(
+            state + " sketch descriptor",
+            descriptor,
+            center + new Vector3(0f, -height * 0.05f, -0.016f),
+            Vector3.back,
+            0.026f,
+            new Color(0.12f, 0.15f, 0.12f),
+            parent);
     }
 
     private static void AddLighting(Transform parent, Bounds room, float floorTop, float ceilingHeight)
@@ -754,6 +1353,24 @@ public static class FernandoTexturedCopyBuilder
         gameObject.GetComponent<Renderer>().sharedMaterial = material;
         UnityEngine.Object.DestroyImmediate(gameObject.GetComponent<Collider>());
         return gameObject;
+    }
+
+    private static void TextLabel(string name, string value, Vector3 position, Vector3 normal, float size, Color color, Transform parent)
+    {
+        GameObject label = new GameObject(name);
+        label.transform.SetParent(parent, true);
+        label.transform.position = position;
+        // Legacy TextMesh geometry faces local -Z, so negate the intended physical normal.
+        label.transform.rotation = Quaternion.LookRotation(-normal, Vector3.up);
+        TextMesh text = label.AddComponent<TextMesh>();
+        text.text = value;
+        text.fontSize = 72;
+        // Keep the sketch annotations inside their paper cards at first-person scale.
+        text.characterSize = size * 0.12f;
+        text.anchor = TextAnchor.MiddleCenter;
+        text.alignment = TextAlignment.Center;
+        text.color = color;
+        text.richText = false;
     }
 
     private static GameObject Cylinder(string name, Vector3 position, float radius, float height, Material material, Transform parent, Quaternion rotation)
