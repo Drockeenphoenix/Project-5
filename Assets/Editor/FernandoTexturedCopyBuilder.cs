@@ -174,7 +174,7 @@ public static class FernandoTexturedCopyBuilder
     /// <summary>
     /// Converts the flat Fernando placeholders into a review-ready, ordered scene without
     /// touching the original greybox scene. The source shapes remain in a disabled reference
-    /// group so dimensions and placement are still recoverable.
+    /// group so dimensions and placement are still recoverable without covering the FBXs.
     /// </summary>
     [MenuItem("Project 5/Repair & Organize Fernando Textured Copy")]
     public static void RepairAndOrganizeTexturedCopy()
@@ -200,7 +200,7 @@ public static class FernandoTexturedCopyBuilder
         AssetDatabase.Refresh();
         EditorUtility.DisplayDialog(
             "Fernando scene repaired",
-            "The final scene now uses the available cabinet and console FBXs, reusable utility-prop prefabs, and clear hierarchy groups. The replaced original blocks are retained but hidden under [20] Greybox replacements.",
+            "The final scene uses the available cabinet and console FBXs, reusable Generated hydrant/fan prefabs, and clear hierarchy groups. Fernando's original cabinet blocks remain organized as hidden position anchors so they cannot overlap the visible FBX models.",
             "OK");
     }
 
@@ -229,19 +229,33 @@ public static class FernandoTexturedCopyBuilder
 
         int importedInstances = 0;
         int generatedProps = 0;
+        int hiddenOriginalAnchors = 0;
         int hierarchyGroups = 0;
         foreach (GameObject root in SceneManager.GetActiveScene().GetRootGameObjects())
         {
             if (root.name.StartsWith("[", StringComparison.Ordinal)) hierarchyGroups++;
-            if (root.name.Equals("[30] Imported FBX Models", StringComparison.Ordinal)) importedInstances = root.transform.childCount;
+            if (root.name.Equals("[30] Imported FBX Models", StringComparison.Ordinal))
+            {
+                foreach (Transform child in root.transform)
+                {
+                    GameObject source = PrefabUtility.GetCorrespondingObjectFromSource<GameObject>(child.gameObject);
+                    string sourcePath = source == null ? string.Empty : AssetDatabase.GetAssetPath(source);
+                    if (sourcePath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
+                    {
+                        importedInstances++;
+                    }
+                }
+            }
             if (root.name.Equals("[40] Utility Props — generated prefabs", StringComparison.Ordinal)) generatedProps = root.transform.childCount;
+            if (root.name.Equals("[20] Greybox replacements — hidden", StringComparison.Ordinal)) hiddenOriginalAnchors = root.transform.childCount;
         }
 
         string report = string.Format(
-            "Asset audit: {0}/6 cabinet/console FBXs are present in Assets/Prefabs. {1} imported FBX instances and {2} utility-prop pieces are in the final scene. {3} ordered root groups are present.\n\nNo fire-hydrant or fan FBX was supplied in Project 5, so those are maintained as reusable Unity prefabs in Assets/Prefabs/Generated and use the project material library.",
+            "Asset audit: {0}/6 cabinet/console FBXs are present in Assets/Prefabs. {1} imported FBX instances and {2} generated utility props are in the final scene. {3} original cabinet/console anchors are retained under [20] as non-rendering position references, and {4} ordered root groups are present.\n\nThe FireHydrant and FloorFan prefabs from Assets/Prefabs/Generated are instantiated in the scene because no separate hydrant or fan FBX was supplied.",
             availableFbx,
             importedInstances,
             generatedProps,
+            hiddenOriginalAnchors,
             hierarchyGroups);
         Debug.Log("Fernando model and organization audit — " + report);
         EditorUtility.DisplayDialog("Fernando model & organization audit", report, "OK");
@@ -256,6 +270,10 @@ public static class FernandoTexturedCopyBuilder
         RemoveGeneratedDefconSketches();
         DestroyDirectRoot("[30] Imported FBX Models");
         DestroyDirectRoot("[40] Utility Props — generated prefabs");
+        // Migrate any prior visible-source layout grouping back into hidden anchors before
+        // sorting, so the original blockouts never obscure the visible FBX cabinet faces.
+        RestoreDetachedSourceObjects("[20] Original cabinets & equipment");
+        RestoreDetachedSourceObjects("[25] FBX replacement anchors — hidden");
 
         Transform architecture = GetOrCreateRoot("[10] Architecture & layout");
         Transform greyboxReference = GetOrCreateRoot("[20] Greybox replacements — hidden");
@@ -290,6 +308,21 @@ public static class FernandoTexturedCopyBuilder
         InstantiateAvailableFbxModels(imported, room, floorTop);
         AddUtilityPropInstances(utilityProps, room, floorTop, ceilingHeight);
         AddDefconReferenceSketches(systems, room, floorTop, ceilingHeight);
+    }
+
+    private static void RestoreDetachedSourceObjects(string rootName)
+    {
+        GameObject legacyRoot = FindDirectRoot(rootName);
+        if (legacyRoot == null) return;
+
+        List<Transform> children = new List<Transform>();
+        foreach (Transform child in legacyRoot.transform) children.Add(child);
+        foreach (Transform child in children)
+        {
+            child.SetParent(null, true);
+            SetRenderersEnabled(child.gameObject, true);
+        }
+        UnityEngine.Object.DestroyImmediate(legacyRoot);
     }
 
     private static Transform OrganizationParent(
@@ -342,6 +375,15 @@ public static class FernandoTexturedCopyBuilder
                 return;
             }
         }
+    }
+
+    private static GameObject FindDirectRoot(string name)
+    {
+        foreach (GameObject root in SceneManager.GetActiveScene().GetRootGameObjects())
+        {
+            if (root.name.Equals(name, StringComparison.Ordinal)) return root;
+        }
+        return null;
     }
 
     private static void SetRenderersEnabled(GameObject gameObject, bool enabled)
@@ -423,19 +465,19 @@ public static class FernandoTexturedCopyBuilder
 
     private static void InstantiateAvailableFbxModels(Transform parent, Bounds room, float floorTop)
     {
-        foreach (GameObject target in FindAllByExactName("Wide Cabinet")) PlaceFbxAtBounds("Assets/Prefabs/WideCabinet.fbx", "Imported FBX — Wide Cabinet", target, steel, parent);
-        foreach (GameObject target in FindAllByNamePrefix("Wide Cabinet (")) PlaceFbxAtBounds("Assets/Prefabs/WideCabinet.fbx", "Imported FBX — Wide Cabinet", target, steel, parent);
-        foreach (GameObject target in FindAllByExactName("tall")) PlaceFbxAtBounds("Assets/Prefabs/TallCabinet.fbx", "Imported FBX — Tall Cabinet", target, steel, parent);
-        foreach (GameObject target in FindAllByNamePrefix("tall (")) PlaceFbxAtBounds("Assets/Prefabs/TallCabinet.fbx", "Imported FBX — Tall Cabinet", target, steel, parent);
-        foreach (GameObject target in FindAllByExactName("Short")) PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Short Cabinet", target, steel, parent);
-        foreach (GameObject target in FindAllByNamePrefix("Short (")) PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Short Cabinet", target, steel, parent);
+        foreach (GameObject target in FindAllByExactName("Wide Cabinet")) PlaceFbxAtBounds("Assets/Prefabs/WideCabinet.fbx", "Imported FBX — Wide Cabinet (Duncan)", target, steel, parent);
+        foreach (GameObject target in FindAllByNamePrefix("Wide Cabinet (")) PlaceFbxAtBounds("Assets/Prefabs/WideCabinet.fbx", "Imported FBX — Wide Cabinet (Duncan)", target, steel, parent);
+        foreach (GameObject target in FindAllByExactName("tall")) PlaceFbxAtBounds("Assets/Prefabs/TallCabinet.fbx", "Imported FBX — Tall Cabinet (Duncan)", target, steel, parent);
+        foreach (GameObject target in FindAllByNamePrefix("tall (")) PlaceFbxAtBounds("Assets/Prefabs/TallCabinet.fbx", "Imported FBX — Tall Cabinet (Duncan)", target, steel, parent);
+        foreach (GameObject target in FindAllByExactName("Short")) PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Short Cabinet (Duncan)", target, steel, parent);
+        foreach (GameObject target in FindAllByNamePrefix("Short (")) PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Short Cabinet (Duncan)", target, steel, parent);
 
         GameObject filing = FindByName("filing");
         if (filing != null) PlaceFbxAtBounds("Assets/Prefabs/filingCabinet.fbx", "Imported FBX — Filing Cabinet (Alvin)", filing, steel, parent);
         GameObject medical = FindByName("medical");
         if (medical != null)
         {
-            GameObject medicalModel = PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Medical Cabinet", medical, steel, parent);
+            GameObject medicalModel = PlaceFbxAtBounds("Assets/Prefabs/ShortCabinet.fbx", "Imported FBX — Medical Cabinet (Duncan)", medical, steel, parent);
             if (medicalModel != null && TryGetBounds(medical, out Bounds medicalSlot))
             {
                 // The source medical-cabinet block was accidentally raised into the wall.
@@ -447,7 +489,7 @@ public static class FernandoTexturedCopyBuilder
         GameObject folder = FindByName("folder");
         if (folder != null)
         {
-            GameObject folderModel = PlaceFbxAtBounds("Assets/Prefabs/filingCabinet.fbx", "Imported FBX — Folder Cabinet", folder, steel, parent);
+            GameObject folderModel = PlaceFbxAtBounds("Assets/Prefabs/filingCabinet.fbx", "Imported FBX — Folder Cabinet (Alvin)", folder, steel, parent);
             if (folderModel != null && TryGetBounds(folder, out Bounds folderSlot))
             {
                 MoveModelToFloor(folderModel, new Vector3(folderSlot.center.x, floorTop, folderSlot.center.z));
